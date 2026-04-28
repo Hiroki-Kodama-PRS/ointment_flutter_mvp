@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -338,6 +339,7 @@ class Metrics {
     required this.adherence,
     required this.earnedBadges,
     required this.lastSevenDays,
+    required this.lastFourteenDays,
   });
 
   final double todayTotal;
@@ -345,10 +347,12 @@ class Metrics {
   final int adherence;
   final int earnedBadges;
   final List<String> lastSevenDays;
+  final List<String> lastFourteenDays;
 
   factory Metrics.fromStore(AppStore store) {
     final today = todayKey();
     final days = lastNDays(7);
+    final chartDays = lastNDays(14);
     final todayTotal = store.usageRecords
         .where((record) => record.date == today)
         .fold<double>(0, (sum, record) => sum + record.amountGrams);
@@ -373,6 +377,7 @@ class Metrics {
       adherence: adherence,
       earnedBadges: earnedBadges,
       lastSevenDays: days,
+      lastFourteenDays: chartDays,
     );
   }
 }
@@ -394,127 +399,376 @@ class HomeTab extends StatefulWidget {
 }
 
 class _HomeTabState extends State<HomeTab> {
-  final amountController = TextEditingController();
-  final noteController = TextEditingController();
-
-  @override
-  void dispose() {
-    amountController.dispose();
-    noteController.dispose();
-    super.dispose();
-  }
-
   @override
   Widget build(BuildContext context) {
-    final progress = widget.store.dailyGoalGrams == 0
-        ? 0.0
-        : (widget.metrics.todayTotal / widget.store.dailyGoalGrams).clamp(
-            0.0,
-            1.0,
-          );
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Wrap(
-          spacing: 12,
-          runSpacing: 12,
-          children: [
-            StatTile(
-              icon: Icons.scale,
-              label: '今日',
-              value: '${widget.metrics.todayTotal.toStringAsFixed(1)}g',
-            ),
-            StatTile(
-              icon: Icons.calendar_month,
-              label: '7日記録率',
-              value: '${widget.metrics.adherence}%',
-            ),
-            StatTile(
-              icon: Icons.bar_chart,
-              label: '今週',
-              value: '${widget.metrics.weekTotal.toStringAsFixed(1)}g',
-            ),
-            StatTile(
-              icon: Icons.workspace_premium,
-              label: 'バッジ',
-              value: '${widget.metrics.earnedBadges}/4',
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        AppCard(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Expanded(child: SectionTitle('本日の目標')),
-                  Text(
-                    '${(progress * 100).round()}%',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                ],
-              ),
-              LinearProgressIndicator(value: progress),
-              const SizedBox(height: 8),
-              Text(
-                '目標 ${widget.store.dailyGoalGrams.toStringAsFixed(1)}g に対して ${widget.metrics.todayTotal.toStringAsFixed(1)}g 記録済み',
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 12),
-        AppCard(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const SectionTitle('今日の軟膏使用量'),
-              TextField(
-                controller: amountController,
-                keyboardType: const TextInputType.numberWithOptions(
-                  decimal: true,
-                ),
-                decoration: const InputDecoration(
-                  labelText: '使用量 g',
-                  prefixIcon: Icon(Icons.medication_liquid),
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: noteController,
-                decoration: const InputDecoration(labelText: '部位や気づき'),
-              ),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: _save,
-                icon: const Icon(Icons.save_outlined),
-                label: const Text('記録する'),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 12),
-        WeekChart(
-          days: widget.metrics.lastSevenDays,
+        UsageLineChart(
+          days: widget.metrics.lastFourteenDays,
           records: widget.store.usageRecords,
-          goal: widget.store.dailyGoalGrams,
+        ),
+        const SizedBox(height: 12),
+        FilledButton.icon(
+          onPressed: _measure,
+          icon: const Icon(Icons.scale_outlined),
+          label: const Text('測定'),
+          style: FilledButton.styleFrom(
+            minimumSize: const Size.fromHeight(56),
+            textStyle: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: RecentBadgeCard(
+                records: widget.store.usageRecords,
+                metrics: widget.metrics,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(child: SkinJournalCard(entries: widget.store.skinEntries)),
+          ],
         ),
       ],
     );
   }
 
-  Future<void> _save() async {
-    final amount = double.tryParse(amountController.text);
-    if (amount == null || amount <= 0) {
-      _showMessage(context, '使用量は 0 より大きい数値で入力してください。');
-      return;
+  Future<void> _measure() async {
+    final measuredAmount = (8 + Random().nextInt(18)) / 10;
+    await widget.onSave(measuredAmount, 'キッチンスケール測定');
+    if (mounted) {
+      _showMessage(
+        context,
+        'キッチンスケールから ${measuredAmount.toStringAsFixed(1)}g を受け取りました。',
+      );
     }
-    await widget.onSave(amount, noteController.text);
-    amountController.clear();
-    noteController.clear();
-    if (mounted) _showMessage(context, '今日の使用量を保存しました。');
   }
+}
+
+class UsageLineChart extends StatelessWidget {
+  const UsageLineChart({required this.days, required this.records, super.key});
+
+  final List<String> days;
+  final List<UsageRecord> records;
+
+  @override
+  Widget build(BuildContext context) {
+    final totals = days
+        .map(
+          (day) => records
+              .where((record) => record.date == day)
+              .fold<double>(0, (sum, record) => sum + record.amountGrams),
+        )
+        .toList();
+    final maxValue = [...totals, 1.0].reduce((a, b) => a > b ? a : b);
+
+    return AppCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SectionTitle('軟膏使用量'),
+          SizedBox(
+            height: 210,
+            child: CustomPaint(
+              painter: UsageLineChartPainter(
+                values: totals,
+                maxValue: maxValue,
+                lineColor: Theme.of(context).colorScheme.primary,
+              ),
+              child: const SizedBox.expand(),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                shortDateJa(days.first),
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+              Text(
+                '日付',
+                style: Theme.of(
+                  context,
+                ).textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w700),
+              ),
+              Text(
+                shortDateJa(days.last),
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class UsageLineChartPainter extends CustomPainter {
+  UsageLineChartPainter({
+    required this.values,
+    required this.maxValue,
+    required this.lineColor,
+  });
+
+  final List<double> values;
+  final double maxValue;
+  final Color lineColor;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final axisPaint = Paint()
+      ..color = const Color(0xFFDCE3EA)
+      ..strokeWidth = 1;
+    final linePaint = Paint()
+      ..color = lineColor
+      ..strokeWidth = 3
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    final dotPaint = Paint()..color = lineColor;
+    final fillPaint = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [lineColor.withValues(alpha: 0.18), Colors.transparent],
+      ).createShader(Offset.zero & size);
+
+    const left = 8.0;
+    const top = 8.0;
+    final chartWidth = size.width - 16;
+    final chartHeight = size.height - 18;
+
+    for (var i = 0; i < 4; i++) {
+      final y = top + chartHeight * i / 3;
+      canvas.drawLine(Offset(left, y), Offset(left + chartWidth, y), axisPaint);
+    }
+
+    if (values.isEmpty) return;
+
+    final points = <Offset>[];
+    for (var i = 0; i < values.length; i++) {
+      final x =
+          left +
+          (values.length == 1 ? 0 : chartWidth * i / (values.length - 1));
+      final normalized = maxValue == 0 ? 0.0 : values[i] / maxValue;
+      final y = top + chartHeight - chartHeight * normalized;
+      points.add(Offset(x, y));
+    }
+
+    final path = Path()..moveTo(points.first.dx, points.first.dy);
+    for (final point in points.skip(1)) {
+      path.lineTo(point.dx, point.dy);
+    }
+
+    final fillPath = Path.from(path)
+      ..lineTo(points.last.dx, top + chartHeight)
+      ..lineTo(points.first.dx, top + chartHeight)
+      ..close();
+
+    canvas.drawPath(fillPath, fillPaint);
+    canvas.drawPath(path, linePaint);
+
+    for (final point in points) {
+      canvas.drawCircle(point, 4, dotPaint);
+      canvas.drawCircle(
+        point,
+        6,
+        Paint()
+          ..color = Colors.white
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant UsageLineChartPainter oldDelegate) {
+    return oldDelegate.values != values ||
+        oldDelegate.maxValue != maxValue ||
+        oldDelegate.lineColor != lineColor;
+  }
+}
+
+class RecentBadgeCard extends StatelessWidget {
+  const RecentBadgeCard({
+    required this.records,
+    required this.metrics,
+    super.key,
+  });
+
+  final List<UsageRecord> records;
+  final Metrics metrics;
+
+  @override
+  Widget build(BuildContext context) {
+    final badge = latestBadge(records, metrics);
+
+    return AppCard(
+      child: SizedBox(
+        height: 210,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            const SectionTitle('直近獲得バッジ'),
+            const Spacer(),
+            CircleAvatar(
+              radius: 42,
+              backgroundColor: badge.done
+                  ? const Color(0xFFE7F6EF)
+                  : const Color(0xFFF1F4F7),
+              child: Icon(
+                badge.icon,
+                size: 46,
+                color: badge.done
+                    ? const Color(0xFF16845B)
+                    : Colors.grey.shade600,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              badge.title,
+              textAlign: TextAlign.center,
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              badge.detail,
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const Spacer(),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class SkinJournalCard extends StatelessWidget {
+  const SkinJournalCard({required this.entries, super.key});
+
+  final List<SkinEntry> entries;
+
+  @override
+  Widget build(BuildContext context) {
+    final latest = entries.isEmpty ? null : entries.first;
+
+    return AppCard(
+      child: SizedBox(
+        height: 210,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionTitle('Skin Journal'),
+            Expanded(
+              child: Container(
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(10),
+                  gradient: const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [Color(0xFFFFE6DE), Color(0xFFE8F0FF)],
+                  ),
+                ),
+                child: latest == null
+                    ? Icon(
+                        Icons.photo_camera_outlined,
+                        size: 44,
+                        color: Colors.grey.shade700,
+                      )
+                    : Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.image_outlined, size: 40),
+                          const SizedBox(height: 6),
+                          Text(formatDateJa(latest.date)),
+                        ],
+                      ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              latest == null
+                  ? 'まだ肌写真とコメントがありません。'
+                  : latest.memo.isEmpty
+                  ? '${conditionLabel(latest.condition)} / コメントなし'
+                  : latest.memo,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class BadgeSummary {
+  BadgeSummary({
+    required this.title,
+    required this.detail,
+    required this.icon,
+    required this.done,
+  });
+
+  final String title;
+  final String detail;
+  final IconData icon;
+  final bool done;
+}
+
+BadgeSummary latestBadge(List<UsageRecord> records, Metrics metrics) {
+  final recordedDays = records.map((record) => record.date).toSet().length;
+
+  if (metrics.weekTotal >= 14) {
+    return BadgeSummary(
+      title: '週間目標達成',
+      detail: '今週の合計が目標量に到達',
+      icon: Icons.emoji_events,
+      done: true,
+    );
+  }
+  if (recordedDays >= 7) {
+    return BadgeSummary(
+      title: '7日記録',
+      detail: '7日分の使用実績',
+      icon: Icons.workspace_premium,
+      done: true,
+    );
+  }
+  if (recordedDays >= 3) {
+    return BadgeSummary(
+      title: '3日記録',
+      detail: '3日分の使用実績',
+      icon: Icons.local_fire_department,
+      done: true,
+    );
+  }
+  if (records.isNotEmpty) {
+    return BadgeSummary(
+      title: '初回記録',
+      detail: '最初の使用量を記録',
+      icon: Icons.flag,
+      done: true,
+    );
+  }
+
+  return BadgeSummary(
+    title: '未獲得',
+    detail: '測定すると獲得できます',
+    icon: Icons.lock_outline,
+    done: false,
+  );
 }
 
 class HistoryTab extends StatelessWidget {

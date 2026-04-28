@@ -11,7 +11,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('Ointment Care'), findsOneWidget);
-    expect(find.text('今日の軟膏使用量'), findsOneWidget);
-    expect(find.text('記録する'), findsOneWidget);
+    expect(find.text('軟膏使用量'), findsOneWidget);
+    expect(find.text('測定'), findsOneWidget);
+    expect(find.text('Skin Journal'), findsOneWidget);
   });
 }
